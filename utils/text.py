@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import re
 
-_TOKEN = re.compile(r"[a-z0-9]+")
+# Any letter or digit, in any script. The old [a-z0-9] pattern split accented
+# words ("não" -> "n", "o"), and those fragments then matched as real tokens.
+_TOKEN = re.compile(r"[^\W_]+")
 _STOP = {
     "the", "a", "an", "of", "to", "in", "is", "are", "and", "or", "for", "on",
     "with", "why", "how", "what", "do", "we", "use", "using", "did", "does",
