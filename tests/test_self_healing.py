@@ -82,3 +82,42 @@ def test_unanswerable_query_fails_gracefully(session):
     logs = session.execute(select(QueryLog)).scalars().all()
     assert len(logs) == 1
     assert len(logs[0].trace) >= 1
+
+
+def test_answering_keeps_knowledge_out_of_decay(session):
+    """Knowledge that grounds an accepted answer counts as used.
+
+    Before this, ``last_used_at`` was only ever set on insert, so a document
+    answering questions every day was still flagged for review a year later.
+    """
+    import datetime as dt
+
+    from services.decay import scan_for_decay
+
+    row = add_knowledge(session, title="Backend choice", content=_DOC, tags=["backend"])
+    row.last_used_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=800)
+    session.commit()
+
+    result = _engine(session).ask(_QUERY)
+    assert result.confidence >= 0.6
+
+    assert scan_for_decay(session, max_age_days=365) == []
+    assert row.status == "active"
+
+
+def test_reused_skill_refreshes_last_used(session):
+    import datetime as dt
+
+    add_knowledge(session, title="Backend choice", content=_DOC, tags=["backend"])
+    _engine(session).ask(_QUERY)
+    skill = session.execute(select(Skill)).scalar_one()
+    old = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=800)
+    skill.last_used_at = old
+    session.commit()
+
+    _engine(session).ask(_QUERY)
+
+    last = skill.last_used_at
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=dt.timezone.utc)
+    assert last > old + dt.timedelta(days=700)

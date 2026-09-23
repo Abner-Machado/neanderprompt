@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from core.config import get_settings
-from models.orm import QueryLog, Skill
+from models.orm import Knowledge, QueryLog, Skill, _utcnow
 from services.llm.base import LLMProvider, Message
 from services.rag.diagnose import diagnose
 from services.rag.judge import HeuristicJudge
@@ -83,6 +83,7 @@ class SelfHealingRAG:
 
             if verdict.confidence >= threshold:
                 healed = attempt > 0
+                self._touch(chunks)
                 if healed:
                     self._remember_skill(query, strategy, diagnosis_label)
                 self._log(query, answer, verdict.confidence, healed, attempt + 1,
@@ -119,9 +120,27 @@ class SelfHealingRAG:
         ).scalar_one_or_none()
         if skill:
             skill.hits += 1
+            skill.last_used_at = _utcnow()
             self.session.commit()
             return RetrievalStrategy.from_dict(skill.strategy), True
         return RetrievalStrategy(), False
+
+    def _touch(self, chunks) -> None:
+        """Mark knowledge that grounded an accepted answer as used.
+
+        Decay prevention flags rows by ``last_used_at``; without this, a document
+        answering questions every day would still be sent to review a year after
+        it was written.
+        """
+        ids = [c.knowledge_id for c in chunks]
+        if not ids:
+            return
+        now = _utcnow()
+        for row in self.session.execute(
+            select(Knowledge).where(Knowledge.id.in_(ids))
+        ).scalars():
+            row.last_used_at = now
+        self.session.commit()
 
     def _remember_skill(self, query: str, strategy: RetrievalStrategy, label: str) -> None:
         sig = signature(query)
